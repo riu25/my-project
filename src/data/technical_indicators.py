@@ -30,8 +30,12 @@ class TechnicalIndicators:
         gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
         
-        rs = gain / loss
+        # Handle division by zero
+        rs = gain / (loss + 1e-10)  # Add small epsilon to avoid division by zero
         rsi = 100 - (100 / (1 + rs))
+        
+        # Clip values to valid RSI range
+        rsi = np.clip(rsi, 0, 100)
         
         return rsi
     
@@ -189,14 +193,16 @@ class TechnicalIndicators:
         # Volume Moving Average
         volume_ma = volume.rolling(window=window).mean()
         
-        # Volume Ratio (current volume / average volume)
-        volume_ratio = volume / volume_ma
+        # Volume Ratio (current volume / average volume) - handle division by zero
+        volume_ratio = volume / (volume_ma + 1e-10)
+        volume_ratio = np.clip(volume_ratio, 0, 100)  # Clip extreme values
         
         # On Balance Volume (OBV)
         obv = (volume * np.sign(close.diff())).cumsum()
         
         # Volume Weighted Average Price (VWAP) - simplified
-        vwap = (close * volume).cumsum() / volume.cumsum()
+        cumulative_volume = volume.cumsum()
+        vwap = (close * volume).cumsum() / (cumulative_volume + 1e-10)
         
         return {
             'volume_ma': volume_ma,

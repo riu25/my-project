@@ -60,24 +60,33 @@ class TechnicalFeatureEngineer:
         
         # Moving average relationships
         if 'sma_20' in features_df.columns and 'sma_50' in features_df.columns:
-            features_df['ma_ratio'] = features_df['sma_20'] / features_df['sma_50']
+            features_df['ma_ratio'] = features_df['sma_20'] / (features_df['sma_50'] + 1e-10)
+            features_df['ma_ratio'] = np.clip(features_df['ma_ratio'], 0.5, 2.0)  # Clip to reasonable range
             features_df['price_above_ma20'] = (features_df['close'] > features_df['sma_20']).astype(int)
             features_df['price_above_ma50'] = (features_df['close'] > features_df['sma_50']).astype(int)
         
         # Bollinger Bands features
         if 'bb_upper' in features_df.columns:
+            bb_range = features_df['bb_upper'] - features_df['bb_lower']
             features_df['bb_position'] = ((features_df['close'] - features_df['bb_lower']) / 
-                                        (features_df['bb_upper'] - features_df['bb_lower']))
-            features_df['bb_squeeze'] = ((features_df['bb_upper'] - features_df['bb_lower']) / 
-                                       features_df['bb_middle'])
+                                        (bb_range + 1e-10))
+            features_df['bb_position'] = np.clip(features_df['bb_position'], -1, 2)  # Clip extreme values
+            features_df['bb_squeeze'] = (bb_range / (features_df['bb_middle'] + 1e-10))
+            features_df['bb_squeeze'] = np.clip(features_df['bb_squeeze'], 0, 1)  # Clip extreme values
         
         # Volume features
         if 'volume' in features_df.columns:
             features_df['volume_momentum'] = features_df['volume'].pct_change()
-            features_df['volume_sma_ratio'] = features_df['volume'] / features_df['volume'].rolling(20).mean()
+            features_df['volume_momentum'] = np.clip(features_df['volume_momentum'], -10, 10)  # Clip extreme values
+            
+            volume_sma = features_df['volume'].rolling(20).mean()
+            features_df['volume_sma_ratio'] = features_df['volume'] / (volume_sma + 1e-10)
+            features_df['volume_sma_ratio'] = np.clip(features_df['volume_sma_ratio'], 0, 10)  # Clip extreme values
             
             # Price-volume relationship
-            features_df['pv_trend'] = features_df['close'].pct_change() * features_df['volume_momentum']
+            price_change = features_df['close'].pct_change()
+            price_change = np.clip(price_change, -1, 1)  # Clip extreme price changes
+            features_df['pv_trend'] = price_change * features_df['volume_momentum']
         
         # Volatility features
         features_df['volatility_momentum'] = features_df['volatility'].diff()
@@ -85,8 +94,10 @@ class TechnicalFeatureEngineer:
         
         # Support/Resistance features
         if 'support' in features_df.columns and 'resistance' in features_df.columns:
-            features_df['support_distance'] = (features_df['close'] - features_df['support']) / features_df['close']
-            features_df['resistance_distance'] = (features_df['resistance'] - features_df['close']) / features_df['close']
+            features_df['support_distance'] = (features_df['close'] - features_df['support']) / (features_df['close'] + 1e-10)
+            features_df['support_distance'] = np.clip(features_df['support_distance'], -1, 1)
+            features_df['resistance_distance'] = (features_df['resistance'] - features_df['close']) / (features_df['close'] + 1e-10)
+            features_df['resistance_distance'] = np.clip(features_df['resistance_distance'], -1, 1)
         
         # Stochastic features
         if 'k_percent' in features_df.columns:
@@ -95,8 +106,17 @@ class TechnicalFeatureEngineer:
             features_df['stoch_overbought'] = (features_df['k_percent'] > 80).astype(int)
         
         # Market regime features
-        features_df['trend_strength'] = abs(features_df['sma_20'] - features_df['sma_50']) / features_df['close']
-        features_df['volatility_regime'] = (features_df['volatility'] > features_df['volatility'].rolling(50).mean()).astype(int)
+        if 'sma_20' in features_df.columns and 'sma_50' in features_df.columns:
+            features_df['trend_strength'] = abs(features_df['sma_20'] - features_df['sma_50']) / (features_df['close'] + 1e-10)
+            features_df['trend_strength'] = np.clip(features_df['trend_strength'], 0, 1)
+        else:
+            features_df['trend_strength'] = 0
+            
+        if 'volatility' in features_df.columns:
+            vol_mean = features_df['volatility'].rolling(50).mean()
+            features_df['volatility_regime'] = (features_df['volatility'] > vol_mean).astype(int)
+        else:
+            features_df['volatility_regime'] = 0
         
         return features_df
     
@@ -270,9 +290,48 @@ class StockPredictiveModel:
         symbol_column = combined_features['symbol']
         combined_features = combined_features.drop('symbol', axis=1)
         
+        # Clean data - handle infinities and extreme values
+        combined_features = self._clean_data(combined_features)
+        
         logger.success(f"Prepared dataset with {len(combined_features)} samples and {len(combined_features.columns)} features")
         
         return combined_features, combined_target
+    
+    def _clean_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean data by handling infinities, NaNs, and extreme values.
+        
+        Args:
+            data: DataFrame to clean
+            
+        Returns:
+            Cleaned DataFrame
+        """
+        cleaned_data = data.copy()
+        
+        # Replace infinities with NaN
+        cleaned_data = cleaned_data.replace([np.inf, -np.inf], np.nan)
+        
+        # Fill NaN values with column median
+        for col in cleaned_data.columns:
+            if cleaned_data[col].dtype in ['float64', 'int64']:
+                median_val = cleaned_data[col].median()
+                if pd.isna(median_val):
+                    median_val = 0
+                cleaned_data[col] = cleaned_data[col].fillna(median_val)
+                
+                # Clip extreme values (beyond 99.9% percentile)
+                if not cleaned_data[col].empty:
+                    lower_bound = cleaned_data[col].quantile(0.001)
+                    upper_bound = cleaned_data[col].quantile(0.999)
+                    cleaned_data[col] = np.clip(cleaned_data[col], lower_bound, upper_bound)
+        
+        # Remove any remaining NaN rows
+        cleaned_data = cleaned_data.dropna()
+        
+        logger.info(f"Data cleaning completed. Removed {len(data) - len(cleaned_data)} problematic rows")
+        
+        return cleaned_data
     
     def train(self, data_dict: Dict[str, pd.DataFrame], test_size: float = 0.2) -> Dict[str, Any]:
         """
@@ -366,7 +425,10 @@ class StockPredictiveModel:
         
         # Select features
         feature_cols = TechnicalFeatureEngineer.select_features(features_data)
-        X = features_data[feature_cols].dropna()
+        X = features_data[feature_cols].copy()
+        
+        # Clean the data
+        X = self._clean_data(X)
         
         if X.empty:
             logger.warning("No valid data for prediction")
