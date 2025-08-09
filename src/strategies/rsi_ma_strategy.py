@@ -141,23 +141,38 @@ class RSIMACrossoverStrategy:
         signals_df['position'] = 0
         signals_df['signal_strength'] = 'NONE'
         
-        # Generate buy signals
+        # Generate buy signals - more practical approach
+        # Either RSI oversold with bullish MA setup OR MA crossover with reasonable RSI
+        ma_bullish = signals_df['sma_20'] > signals_df['sma_50']
+        ma_crossover = (signals_df['sma_20'] > signals_df['sma_50']) & (signals_df['sma_20'].shift(1) <= signals_df['sma_50'].shift(1))
+        rsi_oversold = signals_df['rsi'] < self.rsi_oversold
+        rsi_reasonable = signals_df['rsi'] < 50  # Less restrictive RSI condition
+        
         buy_condition = (
-            (signals_df['rsi'] < self.rsi_oversold) &  # RSI oversold
-            (signals_df['sma_20'] > signals_df['sma_50']) &  # 20-MA above 50-MA
-            (signals_df['sma_20'].shift(1) <= signals_df['sma_50'].shift(1))  # Crossover happened
+            (rsi_oversold & ma_bullish) |  # RSI oversold in bullish trend
+            (ma_crossover & rsi_reasonable)  # MA crossover with reasonable RSI
         )
         
-        # Generate sell signals
+        # Generate sell signals - more balanced approach
+        ma_bearish = signals_df['sma_20'] < signals_df['sma_50']
+        ma_crossover_down = (signals_df['sma_20'] < signals_df['sma_50']) & (signals_df['sma_20'].shift(1) >= signals_df['sma_50'].shift(1))
+        rsi_overbought = signals_df['rsi'] > self.rsi_overbought
+        rsi_high = signals_df['rsi'] > 65  # Less restrictive sell condition
+        
         sell_condition = (
-            (signals_df['rsi'] > self.rsi_overbought) |  # RSI overbought
-            (signals_df['sma_20'] < signals_df['sma_50']) |  # MA crossover down
-            (signals_df['close'] < signals_df['bb_lower'])  # Price below lower Bollinger Band
+            (rsi_overbought) |  # RSI overbought
+            (ma_crossover_down) |  # MA crossover down
+            (rsi_high & ma_bearish)  # High RSI in bearish trend
         )
         
         # Set signals
         signals_df.loc[buy_condition, 'signal'] = 1
         signals_df.loc[sell_condition, 'signal'] = -1
+        
+        # Debug: Log signal statistics
+        total_buy_signals = buy_condition.sum()
+        total_sell_signals = sell_condition.sum()
+        logger.info(f"{symbol}: Generated {total_buy_signals} buy signals and {total_sell_signals} sell signals out of {len(signals_df)} periods")
         
         # Calculate signal strength
         for idx in signals_df.index:
@@ -218,6 +233,10 @@ class RSIMACrossoverStrategy:
             data_with_signals = self.generate_signals(data, symbol)
             processed_data[symbol] = data_with_signals
             all_dates.update(data.index)
+            
+            # Debug: Check signal generation
+            signal_summary = data_with_signals['signal'].value_counts()
+            logger.info(f"{symbol} signal distribution: {signal_summary.to_dict()}")
         
         # Sort dates for chronological processing
         sorted_dates = sorted(list(all_dates))
@@ -347,7 +366,10 @@ class RSIMACrossoverStrategy:
         
         # Risk metrics
         volatility = daily_returns.std() * np.sqrt(252)  # Annualized
-        sharpe_ratio = (daily_returns.mean() * 252) / (daily_returns.std() * np.sqrt(252))
+        if daily_returns.std() > 0:
+            sharpe_ratio = (daily_returns.mean() * 252) / (daily_returns.std() * np.sqrt(252))
+        else:
+            sharpe_ratio = 0.0  # No volatility means no Sharpe ratio
         
         # Maximum drawdown
         portfolio_df['peak'] = portfolio_df['portfolio_value'].expanding().max()
