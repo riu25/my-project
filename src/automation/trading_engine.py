@@ -100,9 +100,18 @@ class TradingEngine:
             logger.info("Initializing Google Sheets logger...")
             try:
                 self.sheets_logger = GoogleSheetsLogger()
+                if not self.sheets_logger.is_connected():
+                    raise Exception("Failed to connect to Google Sheets")
             except Exception as e:
                 logger.warning(f"Google Sheets initialization failed: {e}")
-                self.sheets_logger = None
+                logger.info("Using mock Google Sheets logger for demonstration...")
+                try:
+                    from ..utils.mock_sheets_logger import MockGoogleSheetsLogger
+                    self.sheets_logger = MockGoogleSheetsLogger()
+                    logger.success("Mock Google Sheets logger initialized successfully")
+                except Exception as mock_error:
+                    logger.error(f"Failed to initialize mock logger: {mock_error}")
+                    self.sheets_logger = None
             
             # Telegram bot
             logger.info("Initializing Telegram bot...")
@@ -352,7 +361,8 @@ class TradingEngine:
             backtest_results = self.strategy.backtest(
                 historical_data, 
                 start_date=start_date, 
-                end_date=end_date
+                end_date=end_date,
+                sheets_logger=self.sheets_logger
             )
             
             # Log results to Google Sheets
