@@ -191,7 +191,7 @@ class RSIMACrossoverStrategy:
         return signals_df
     
     def backtest(self, data_dict: Dict[str, pd.DataFrame], start_date: str = None, 
-                end_date: str = None) -> Dict:
+                end_date: str = None, sheets_logger=None) -> Dict:
         """
         Perform backtesting on historical data.
         
@@ -199,11 +199,15 @@ class RSIMACrossoverStrategy:
             data_dict: Dictionary of symbol -> DataFrame with OHLCV and indicators
             start_date: Start date for backtesting (YYYY-MM-DD)
             end_date: End date for backtesting (YYYY-MM-DD)
+            sheets_logger: Optional Google Sheets logger for trade logging
             
         Returns:
             Dictionary with backtest results
         """
         logger.info("Starting backtesting...")
+        
+        # Store sheets logger reference
+        self.sheets_logger = sheets_logger
         
         # Reset strategy state
         self.current_capital = self.initial_capital
@@ -271,7 +275,32 @@ class RSIMACrossoverStrategy:
         # Calculate final results
         results = self._calculate_backtest_results(portfolio_history)
         
+        # Log portfolio summary to Google Sheets if available
+        if hasattr(self, 'sheets_logger') and self.sheets_logger and portfolio_history:
+            try:
+                # Log the final portfolio summary
+                final_summary = {
+                    'date': portfolio_history[-1]['date'],
+                    'total_capital': portfolio_history[-1]['portfolio_value'],
+                    'cash': portfolio_history[-1]['cash'],
+                    'positions_value': portfolio_history[-1]['positions_value'],
+                    'total_pnl': portfolio_history[-1]['portfolio_value'] - self.initial_capital,
+                    'cumulative_return': results.get('total_return', 0),
+                    'active_positions': len(self.positions),
+                    'max_drawdown': results.get('max_drawdown', 0),
+                    'win_rate': results.get('win_rate', 0)
+                }
+                self.sheets_logger.update_portfolio_summary(final_summary)
+                logger.info("Portfolio summary logged to Google Sheets")
+            except Exception as e:
+                logger.warning(f"Failed to log portfolio summary to Google Sheets: {e}")
+        
         logger.success(f"Backtesting completed. Total return: {results['total_return']:.2%}")
+        
+        # Show mock data summary if using mock logger
+        if (hasattr(self, 'sheets_logger') and self.sheets_logger and 
+            hasattr(self.sheets_logger, 'print_summary')):
+            self.sheets_logger.print_summary()
         
         return results
     
@@ -308,6 +337,26 @@ class RSIMACrossoverStrategy:
                 # Update capital
                 self.current_capital -= cost
                 
+                # Log to Google Sheets if available
+                if hasattr(self, 'sheets_logger') and self.sheets_logger:
+                    try:
+                        trade_data = {
+                            'timestamp': date,
+                            'symbol': symbol,
+                            'action': 'BUY',
+                            'quantity': quantity,
+                            'entry_price': price,
+                            'stop_loss': stop_loss,
+                            'take_profit': take_profit,
+                            'rsi': row.get('rsi', 0),
+                            'sma_20': row.get('sma_20', 0),
+                            'sma_50': row.get('sma_50', 0),
+                            'signal_strength': row.get('signal_strength', 'UNKNOWN')
+                        }
+                        self.sheets_logger.log_trade(trade_data)
+                    except Exception as e:
+                        logger.warning(f"Failed to log trade to Google Sheets: {e}")
+                
                 logger.info(f"BUY: {quantity} shares of {symbol} at ${price:.2f}")
         
         # Check for sell signal or stop loss/take profit
@@ -336,10 +385,38 @@ class RSIMACrossoverStrategy:
                 proceeds = quantity * price
                 
                 # Close the trade
-                position['trade'].close_trade(price, date, exit_reason)
+                trade = position['trade']
+                trade.close_trade(price, date, exit_reason)
                 
                 # Update capital
                 self.current_capital += proceeds
+                
+                # Log completed trade to Google Sheets if available
+                if hasattr(self, 'sheets_logger') and self.sheets_logger:
+                    try:
+                        completed_trade_data = {
+                            'timestamp': date,
+                            'symbol': symbol,
+                            'action': 'SELL',
+                            'quantity': quantity,
+                            'entry_price': trade.entry_price,
+                            'exit_price': price,
+                            'entry_date': trade.entry_date,
+                            'exit_date': date,
+                            'exit_reason': exit_reason,
+                            'pnl': trade.pnl,
+                            'pnl_percent': trade.pnl_percent,
+                            'stop_loss': trade.stop_loss,
+                            'take_profit': trade.take_profit,
+                            'trade_duration': (date - trade.entry_date).days if hasattr(trade, 'entry_date') else 0,
+                            'rsi': row.get('rsi', 0),
+                            'sma_20': row.get('sma_20', 0),
+                            'sma_50': row.get('sma_50', 0),
+                            'signal_strength': row.get('signal_strength', 'UNKNOWN')
+                        }
+                        self.sheets_logger.log_trade(completed_trade_data)
+                    except Exception as e:
+                        logger.warning(f"Failed to log completed trade to Google Sheets: {e}")
                 
                 # Remove position
                 del self.positions[symbol]
